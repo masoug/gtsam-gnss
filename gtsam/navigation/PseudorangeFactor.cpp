@@ -14,6 +14,12 @@ namespace {
 /// Speed of light in a vacuum (m/s):
 constexpr double CLIGHT = 299792458.0;
 
+/// L1 frequency in HZ:
+constexpr double L1_FREQ = 1.57542E9;
+
+/// L1 wavelength in meters:
+constexpr double L1_LAMBDA_INV = L1_FREQ / CLIGHT;
+
 }  // namespace
 
 namespace gtsam {
@@ -26,7 +32,7 @@ PseudorangeFactor::PseudorangeFactor(const Key receiverPositionKey,
                                      const double satelliteClockBias,
                                      const SharedNoiseModel& model)
     : Base(model, receiverPositionKey, receiverClockBiasKey),
-      PseudorangeBase{measuredPseudorange, satellitePosition,
+      PseudorangeBase{measuredPseudorange, 0.0, satellitePosition,
                       satelliteClockBias} {}
 
 //***************************************************************************
@@ -83,7 +89,7 @@ DifferentialPseudorangeFactor::DifferentialPseudorangeFactor(
     const SharedNoiseModel& model)
     : Base(model, receiverPositionKey, receiverClockBiasKey,
            differentialCorrectionKey),
-      PseudorangeBase{measuredPseudorange, satellitePosition,
+      PseudorangeBase{measuredPseudorange, 0.0, satellitePosition,
                       satelliteClockBias} {}
 
 //***************************************************************************
@@ -107,14 +113,14 @@ bool DifferentialPseudorangeFactor::equals(const NonlinearFactor& expected,
 
 //***************************************************************************
 Vector DifferentialPseudorangeFactor::evaluateError(
-    const Point3& receiverPosition, const double& receiverClock_bias,
+    const Point3& receiverPosition, const double& receiverClockBias,
     const double& differentialCorrection, OptionalMatrixType HreceiverPos,
     OptionalMatrixType HreceiverClockBias,
     OptionalMatrixType HdifferentialCorrection) const {
   // Apply pseudorange equation: rho = range + c*[dt_u - dt^s]
   const Vector3 position_difference = receiverPosition - satPos_;
   const double range = position_difference.norm();
-  const double rho = range + CLIGHT * (receiverClock_bias - satClkBias_);
+  const double rho = range + CLIGHT * (receiverClockBias - satClkBias_);
   const double error = rho - pseudorange_ - differentialCorrection;
 
   // Compute associated derivatives:
@@ -136,6 +142,7 @@ Vector DifferentialPseudorangeFactor::evaluateError(
 
   return Vector1(error);
 }
+
 //***************************************************************************
 PseudorangeFactorArm::PseudorangeFactorArm(
     const Key poseKey, const Key receiverClockBiasKey,
@@ -143,7 +150,7 @@ PseudorangeFactorArm::PseudorangeFactorArm(
     const Point3& leverArm, const double satelliteClockBias,
     const SharedNoiseModel& model)
     : Base(model, poseKey, receiverClockBiasKey),
-      PseudorangeBase{measuredPseudorange, satellitePosition,
+      PseudorangeBase{measuredPseudorange, 0.0, satellitePosition,
                       satelliteClockBias},
       bL_(leverArm) {}
 
@@ -154,14 +161,14 @@ PseudorangeFactorArm::PseudorangeFactorArm(
     const Point3& leverArm, const Pose3& ecef_T_nav,
     const double satelliteClockBias, const SharedNoiseModel& model)
     : Base(model, poseKey, receiverClockBiasKey),
-      PseudorangeBase{measuredPseudorange, satellitePosition,
+      PseudorangeBase{measuredPseudorange, 0.0, satellitePosition,
                       satelliteClockBias},
       bL_(leverArm),
       ecef_T_nav_(ecef_T_nav) {}
 
 //***************************************************************************
 void PseudorangeFactorArm::print(const std::string& s,
-                                  const KeyFormatter& keyFormatter) const {
+                                 const KeyFormatter& keyFormatter) const {
   Base::print(s, keyFormatter);
   gtsam::print(pseudorange_, "pseudorange (m): ");
   gtsam::print(Vector(satPos_), "sat position (ECEF meters): ");
@@ -174,7 +181,7 @@ void PseudorangeFactorArm::print(const std::string& s,
 
 //***************************************************************************
 bool PseudorangeFactorArm::equals(const NonlinearFactor& expected,
-                                   double tol) const {
+                                  double tol) const {
   const This* e = dynamic_cast<const This*>(&expected);
   if (e == nullptr || !Base::equals(*e, tol)) return false;
   if (!traits<double>::Equals(pseudorange_, e->pseudorange_, tol)) return false;
@@ -239,7 +246,7 @@ DifferentialPseudorangeFactorArm::DifferentialPseudorangeFactorArm(
     const Point3& satellitePosition, const Point3& leverArm,
     const double satelliteClockBias, const SharedNoiseModel& model)
     : Base(model, poseKey, receiverClockBiasKey, differentialCorrectionKey),
-      PseudorangeBase{measuredPseudorange, satellitePosition,
+      PseudorangeBase{measuredPseudorange, 0.0, satellitePosition,
                       satelliteClockBias},
       bL_(leverArm) {}
 
@@ -270,8 +277,8 @@ void DifferentialPseudorangeFactorArm::print(
 }
 
 //***************************************************************************
-bool DifferentialPseudorangeFactorArm::equals(
-    const NonlinearFactor& expected, double tol) const {
+bool DifferentialPseudorangeFactorArm::equals(const NonlinearFactor& expected,
+                                              double tol) const {
   const This* e = dynamic_cast<const This*>(&expected);
   if (e == nullptr || !Base::equals(*e, tol)) return false;
   if (!traits<double>::Equals(pseudorange_, e->pseudorange_, tol)) return false;
@@ -334,4 +341,74 @@ Vector DifferentialPseudorangeFactorArm::evaluateError(
   return Vector1(error);
 }
 
+//***************************************************************************
+DifferentialCarrierPhaseFactor::DifferentialCarrierPhaseFactor(
+    const Key receiverPositionKey, const Key receiverClockBiasKey,
+    const Key differentialCorrectionKey, const Key wholeCyclesKey,
+    const double measuredCarrierPhase, const Point3& satellitePosition,
+    const double satelliteClockBias, const SharedNoiseModel& model)
+    : Base(model, receiverPositionKey, receiverClockBiasKey,
+           differentialCorrectionKey, wholeCyclesKey),
+      PseudorangeBase{0.0, measuredCarrierPhase, satellitePosition,
+                      satelliteClockBias} {}
+
+//***************************************************************************
+void DifferentialCarrierPhaseFactor::print(
+    const std::string& s, const KeyFormatter& keyFormatter) const {
+  Base::print(s, keyFormatter);
+  gtsam::print(carrierPhase_, "carrier phase (cycles): ");
+  gtsam::print(Vector(satPos_), "sat position (ECEF meters): ");
+  gtsam::print(satClkBias_, "sat clock bias (s): ");
+}
+
+//***************************************************************************
+bool DifferentialCarrierPhaseFactor::equals(const NonlinearFactor& expected,
+                                            double tol) const {
+  const This* e = dynamic_cast<const This*>(&expected);
+  return e != nullptr && Base::equals(*e, tol) &&
+         traits<double>::Equals(carrierPhase_, e->carrierPhase_, tol) &&
+         traits<Point3>::Equals(satPos_, e->satPos_, tol) &&
+         traits<double>::Equals(satClkBias_, e->satClkBias_, tol);
+}
+
+//***************************************************************************
+Vector DifferentialCarrierPhaseFactor::evaluateError(
+    const Point3& receiverPosition, const double& receiverClockBias,
+    const double& differentialCorrection, const double& wholeCycles,
+    OptionalMatrixType HreceiverPos, OptionalMatrixType HreceiverClockBias,
+    OptionalMatrixType HdifferentialCorrection,
+    OptionalMatrixType HwholeCycles) const {
+  // Apply carrier-phase equation:
+  // phi = lambda^-1*[r - I + T] + f*(dt_u - dt_s) + N
+  // Note: I and T are combined into the differential correction term.
+  const Vector3 position_difference = receiverPosition - satPos_;
+  const double range = position_difference.norm();
+  const double range_term = L1_LAMBDA_INV * (range - differentialCorrection);
+  const double clock_term = L1_FREQ * (receiverClockBias - satClkBias_);
+  const double phi = range_term + clock_term + wholeCycles;
+  const double error = phi - carrierPhase_;
+
+  // Compute associated derivatives:
+  if (HreceiverPos) {
+    if (range < std::numeric_limits<double>::epsilon()) {
+      *HreceiverPos = Matrix13::Zero();
+    } else {
+      *HreceiverPos = (position_difference / range).transpose() * L1_LAMBDA_INV;
+    }
+  }
+
+  if (HreceiverClockBias) {
+    *HreceiverClockBias = I_1x1 * L1_FREQ;
+  }
+
+  if (HdifferentialCorrection) {
+    *HdifferentialCorrection = -I_1x1 * L1_LAMBDA_INV;
+  }
+
+  if (HwholeCycles) {
+    *HwholeCycles = I_1x1;
+  }
+
+  return Vector1(error);
+}
 }  // namespace gtsam

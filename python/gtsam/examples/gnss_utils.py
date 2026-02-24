@@ -117,23 +117,123 @@ def plotMap(lat, lon):
     osm_url = f"https://www.openstreetmap.org/export/embed.html?bbox={lon-0.01}%2C{lat-0.01}%2C{lon+0.01}%2C{lat+0.01}&layer=map&marker={lat}%2C{lon}"
     return IFrame(osm_url, width=700, height=500)
 
-def iterateObservations(recv_data: RINEXData, sat_positions: SatellitePositions, pr_code: int = rtklib.CODE_L1C, n: int = -1):
-    for i in range(n):
+@dataclass
+class SatelliteObservation:
+    sat: int
+    sat_bias: float
+    sat_pos: np.ndarray
+    pseudorange: float
+    carrier_phase: float
+    loss_of_lock: bool
+
+@dataclass
+class MeasurementEpoch:
+    time: rtklib.gtime_t
+    sat_obs: list[SatelliteObservation]
+
+def iterateEpochs(recv_data: RINEXData, n: int = -1, pr_code: int = rtklib.CODE_L1C):
+    if n < 0:
+        iterations = recv_data.obs.n
+    else:
+        iterations = min(n, recv_data.obs.n)
+
+    sat_obs: list[SatelliteObservation] = []
+    num_epochs: int = 0
+    for i in range(iterations):
         obsd = recv_data.obs.data[i]
-        sat_bias = sat_positions.satClockBias(i)
-        sat_pos = sat_positions.satPosition(i)
-    
-        # Skip this observation if sat positioning failed:
-        if np.linalg.norm(sat_pos) < 1.0:
-            continue
     
         # Identify pseudorange code CODE_L1C:
         for j, code in enumerate(obsd.code):
             if code == pr_code:
                 pseudorange = obsd.P[j]
+                carrier_phase = obsd.L[j]
+                loss_of_lock = obsd.LLI[j]
+                break
+        else:
+            # If no CODE_L1C pseudorange found, skip this observation:
+            # print("skip b/c no pseudorange")
+            continue
+
+        # Calculate satellite position:
+        rs = rtklib.Arr1Ddouble(6) # [x, y, z, vx, vy, vz]
+        dts = rtklib.Arr1Ddouble(2) # [clock_bias, clock_drift]
+        var = rtklib.Arr1Ddouble(1) # variance
+        svh = rtklib.Arr1Dint(1)    # satellite health
+
+        # The correct way for high precision
+        tau = pseudorange / rtklib.CLIGHT
+        t_transmission = rtklib.timeadd(obsd.time, -tau)
+        ret = rtklib.satpos(t_transmission, obsd.time, obsd.sat, 0, recv_data.nav, rs, dts, var, svh)
+    
+        # Skip this observation if sat positioning failed:
+        if ret == 0:
+            print("positioning failed")
+            continue
+        
+        sat_bias = dts[0]
+        sat_pos = np.array([rs[0], rs[1], rs[2]])
+
+        # Populate satellite observation struct with data:
+        sat_obs.append(
+            SatelliteObservation(
+                obsd.sat,
+                sat_bias,
+                sat_pos,
+                pseudorange,
+                carrier_phase,
+                bool(loss_of_lock)
+            )
+        )
+
+        if i == iterations-1:
+            # No more iterations, return the results so far:
+            yield num_epochs, MeasurementEpoch(obsd.time, sat_obs)
+            return
+
+        # Check if a new measurement epoch is next:
+        if i < iterations-1 and rtklib.timediff(recv_data.obs.data[i+1].time, obsd.time) > 0.05:
+            # New measurement epoch coming next. Yield current results so far:
+            yield num_epochs, MeasurementEpoch(obsd.time, sat_obs)
+            sat_obs = []  # Reset observations for the next epoch.
+            num_epochs += 1
+        
+
+def iterateObservations(recv_data: RINEXData, n: int = -1, pr_code: int = rtklib.CODE_L1C):
+    if n < 0:
+        iterations = recv_data.obs.n
+    else:
+        iterations = min(n, recv_data.obs.n)
+    for i in range(iterations):
+        obsd = recv_data.obs.data[i]
+    
+        # Identify pseudorange code CODE_L1C:
+        for j, code in enumerate(obsd.code):
+            if code == pr_code:
+                pseudorange = obsd.P[j]
+                carrier_phase = obsd.L[j]
+                loss_of_lock = obsd.LLI[j]
                 break
         else:
             # If no CODE_L1C pseudorange found, skip this observation:
             continue
 
-        yield obsd, sat_bias, sat_pos, pseudorange
+        # Calculate satellite position:
+        rs = rtklib.Arr1Ddouble(6) # [x, y, z, vx, vy, vz]
+        dts = rtklib.Arr1Ddouble(2) # [clock_bias, clock_drift]
+        var = rtklib.Arr1Ddouble(1) # variance
+        svh = rtklib.Arr1Dint(1)    # satellite health
+
+        # The correct way for high precision
+        tau = pseudorange / rtklib.CLIGHT
+        t_transmission = rtklib.timeadd(obsd.time, -tau)
+        ret = rtklib.satpos(t_transmission, obsd.time, obsd.sat, 0, recv_data.nav, rs, dts, var, svh)
+    
+        # Skip this observation if sat positioning failed:
+        if ret == 0:
+            print("positioning failed")
+            continue
+        
+        sat_bias = dts[0]
+        sat_pos = np.array([rs[0], rs[1], rs[2]])
+
+        yield i, obsd, sat_bias, sat_pos, pseudorange, carrier_phase, loss_of_lock

@@ -22,9 +22,10 @@ namespace gtsam {
  */
 struct PseudorangeBase {
   double
-      pseudorange_;    ///< Receiver-reported pseudorange measurement in meters.
-  Point3 satPos_;      ///< Satellite position in WGS84 ECEF meters.
-  double satClkBias_;  ///< Satellite clock bias in seconds.
+      pseudorange_;  ///< Receiver-reported pseudorange measurement in meters.
+  double carrierPhase_;  ///< Receiver-reported carrier phase in cycles.
+  Point3 satPos_;        ///< Satellite position in WGS84 ECEF meters.
+  double satClkBias_;    ///< Satellite clock bias in seconds.
 };
 
 /**
@@ -120,10 +121,6 @@ class GTSAM_EXPORT PseudorangeFactor : public NoiseModelFactorN<Point3, double>,
 #endif
 };
 
-/// traits
-template <>
-struct traits<PseudorangeFactor> : public Testable<PseudorangeFactor> {};
-
 /**
  * Simple differentially-corrected pseudorange factor for precise positioning.
  *
@@ -203,7 +200,7 @@ class GTSAM_EXPORT DifferentialPseudorangeFactor
 
   /// vector of errors
   Vector evaluateError(
-      const Point3& receiverPosition, const double& receiverClock_bias,
+      const Point3& receiverPosition, const double& receiverClockBias,
       const double& differentialCorrection, OptionalMatrixType HreceiverPos,
       OptionalMatrixType HreceiverClockBias,
       OptionalMatrixType HdifferentialCorrection) const override;
@@ -223,10 +220,102 @@ class GTSAM_EXPORT DifferentialPseudorangeFactor
 #endif
 };
 
+/**
+ * Differentially-corrected carrier-phase factor for precise positioning.
+ *
+ * This factor implements the model prescribed by chapter 7.2.1 from [1],
+ * where a reference GNSS receiver with known position provides differential
+ * carrier-phase corrections for a "user" receiver to eliminate common-mode
+ * atmospheric errors. This factor also adds another estimated parameter, "N",
+ * that counts the number of whole cycles between the receiver and satellite.
+ * If integer ambiguity can be resolved for the "N" parameter, the receiver
+ * could pinpoint its position to centimeter-scale accuracy and precision,
+ * something pseudorange-only methods cannot achieve.
+ *
+ * @note This factor is designed for L1 carrier-phase measurements only.
+ *
+ * @ingroup navigation
+ *
+ * REFERENCES:
+ * [1] P. Misra et. al., "Global Positioning Systems: Signals, Measurements, and
+ * Performance", Second Edition, 2012.
+ */
+class GTSAM_EXPORT DifferentialCarrierPhaseFactor
+    : public NoiseModelFactorN<Point3, double, double, double>,
+      private PseudorangeBase {
+ private:
+  typedef NoiseModelFactorN<Point3, double, double, double> Base;
+
+ public:
+  // Provide access to the Matrix& version of evaluateError:
+  using Base::evaluateError;
+
+  /// shorthand for a smart pointer to a factor
+  typedef std::shared_ptr<DifferentialCarrierPhaseFactor> shared_ptr;
+
+  /// Typedef to this class
+  typedef DifferentialCarrierPhaseFactor This;
+
+  /** default constructor - only use for serialization */
+  DifferentialCarrierPhaseFactor() = default;
+
+  virtual ~DifferentialCarrierPhaseFactor() = default;
+
+  DifferentialCarrierPhaseFactor(
+      Key receiverPositionKey, Key receiverClockBiasKey,
+      Key differentialCorrectionKey, Key wholeCyclesKey,
+      double measuredCarrierPhase, const Point3& satellitePosition,
+      double satelliteClockBias = 0.0,
+      const SharedNoiseModel& model = noiseModel::Unit::Create(1));
+
+  /// @return a deep copy of this factor
+  gtsam::NonlinearFactor::shared_ptr clone() const override {
+    return std::static_pointer_cast<gtsam::NonlinearFactor>(
+        gtsam::NonlinearFactor::shared_ptr(new This(*this)));
+  }
+
+  /// print
+  void print(const std::string& s = "", const KeyFormatter& keyFormatter =
+                                            DefaultKeyFormatter) const override;
+
+  /// equals
+  bool equals(const NonlinearFactor& expected,
+              double tol = 1e-9) const override;
+
+  /// vector of errors
+  Vector evaluateError(const Point3& receiverPosition,
+                       const double& receiverClockBias,
+                       const double& differentialCorrection,
+                       const double& wholeCycles,
+                       OptionalMatrixType HreceiverPos,
+                       OptionalMatrixType HreceiverClockBias,
+                       OptionalMatrixType HdifferentialCorrection,
+                       OptionalMatrixType HwholeCycles) const override;
+
+ private:
+#if GTSAM_ENABLE_BOOST_SERIALIZATION  ///
+  /// Serialization function
+  friend class boost::serialization::access;
+  template <class ARCHIVE>
+  void serialize(ARCHIVE& ar, const unsigned int /*version*/) {
+    ar& BOOST_SERIALIZATION_BASE_OBJECT_NVP(
+        DifferentialCarrierPhaseFactor::Base);
+    ar& BOOST_SERIALIZATION_NVP(carrierPhase_);
+    ar& BOOST_SERIALIZATION_NVP(satPos_);
+    ar& BOOST_SERIALIZATION_NVP(satClkBias_);
+  }
+#endif
+};
+
 /// traits
+template <>
+struct traits<PseudorangeFactor> : public Testable<PseudorangeFactor> {};
 template <>
 struct traits<DifferentialPseudorangeFactor>
     : public Testable<DifferentialPseudorangeFactor> {};
+template <>
+struct traits<DifferentialCarrierPhaseFactor>
+    : public Testable<DifferentialCarrierPhaseFactor> {};
 
 /**
  * GNSS pseudorange factor with lever arm correction.
@@ -269,7 +358,7 @@ class GTSAM_EXPORT PseudorangeFactorArm
   typedef PseudorangeFactorArm This;
 
   /** default constructor - only use for serialization */
-  PseudorangeFactorArm() : PseudorangeBase{0.0, Point3(0, 0, 0), 0.0}, bL_(0, 0, 0) {}
+  PseudorangeFactorArm() : PseudorangeBase{0.0, 0.0, Point3(0, 0, 0), 0.0}, bL_(0, 0, 0) {}
 
   virtual ~PseudorangeFactorArm() = default;
 
@@ -392,7 +481,7 @@ class GTSAM_EXPORT DifferentialPseudorangeFactorArm
   typedef DifferentialPseudorangeFactorArm This;
 
   /** default constructor - only use for serialization */
-  DifferentialPseudorangeFactorArm() : PseudorangeBase{0.0, Point3(0, 0, 0), 0.0}, bL_(0, 0, 0) {}
+  DifferentialPseudorangeFactorArm() : PseudorangeBase{0.0, 0.0, Point3(0, 0, 0), 0.0}, bL_(0, 0, 0) {}
 
   virtual ~DifferentialPseudorangeFactorArm() = default;
 

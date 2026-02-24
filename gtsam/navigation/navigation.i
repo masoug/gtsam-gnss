@@ -613,6 +613,27 @@ virtual class DifferentialPseudorangeFactorArm : gtsam::NonlinearFactor {
   void serialize() const;
 };
 
+virtual class DifferentialCarrierPhaseFactor : gtsam::NonlinearFactor {
+  DifferentialCarrierPhaseFactor(
+      gtsam::Key receiverPositionKey, gtsam::Key receiverClockBiasKey,
+      gtsam::Key differentialCorrectionKey, gtsam::Key wholeCyclesKey,
+      double measuredCarrierPhase, const gtsam::Point3& satellitePosition,
+      double satelliteClockBias, const gtsam::noiseModel::Base* model);
+
+  // Testable
+  void print(string s = "", const gtsam::KeyFormatter& keyFormatter =
+                                gtsam::DefaultKeyFormatter) const;
+  bool equals(const gtsam::NonlinearFactor& expected, double tol);
+
+  // Standard Interface
+  gtsam::Vector evaluateError(const gtsam::Point3& receiverPosition,
+                              const double& receiverClockBias,
+                              const double& differentialCorrection,
+                              const double& wholeCycles) const;
+
+  // enable serialization functionality
+  void serialize() const;
+};
 
 #include <gtsam/navigation/BarometricFactor.h>
 virtual class BarometricFactor : gtsam::NonlinearFactor {
